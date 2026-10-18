@@ -73,7 +73,7 @@ impl InnerConfig {
         self,
         inner_key: impl FnOnce(usize) -> EncryptionKey,
         print_decrypt: bool,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<Data> {
         let cipher = lookup_cipher_dyn(&self.cipher_name, inner_key)
             .with_context(|| format!("Trying to look up cipher {}", self.cipher_name))?
             .with_context(|| format!("Trying to look up cipher {}", self.cipher_name))?;
@@ -102,7 +102,7 @@ impl InnerConfig {
             )
         }
 
-        Ok(serde_json::from_reader(&mut Cursor::new(plaintext))?)
+        Ok(plaintext)
     }
 }
 
@@ -324,12 +324,14 @@ fn main() -> Result<()> {
     let outer = OuterConfig::deserialize(&mut reader, !args.inner)?;
     let key = derive_key::<KDF>(&outer.kdf_parameters_serialized, password)?;
     let inner = outer.decrypt(key.outer_key(), !args.inner)?;
-    let inner_config = inner.decrypt(key.inner_key(), !args.inner)?;
+    let inner_config_data = inner.decrypt(key.inner_key(), !args.inner)?;
 
     let inner_config_string = if args.prettify {
+        let inner_config: serde_json::Value =
+            serde_json::from_reader(&mut Cursor::new(inner_config_data))?;
         serde_json::to_string_pretty(&inner_config)?
     } else {
-        inner_config.to_string()
+        String::from_utf8_lossy(&inner_config_data).to_string()
     };
     println!("{}", inner_config_string);
 
