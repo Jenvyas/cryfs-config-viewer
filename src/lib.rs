@@ -255,7 +255,7 @@ type KDF = ScryptScrypt;
 pub type OuterCipher = cryfs_crypto::symmetric::Aes256Gcm;
 
 #[derive(Debug)]
-pub struct ConfigEncryptionKey {
+struct ConfigEncryptionKey {
     combined_key: EncryptionKey,
 }
 
@@ -283,7 +283,7 @@ impl ConfigEncryptionKey {
     }
 }
 
-pub fn derive_key<KDF: PasswordBasedKDF>(
+fn derive_key<KDF: PasswordBasedKDF>(
     kdf_parameters_serialized: &[u8],
     password: &str,
 ) -> Result<ConfigEncryptionKey> {
