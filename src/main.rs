@@ -2,7 +2,7 @@ use anyhow::{Context, Result, ensure};
 use binary_layout::Field;
 use binrw::{BinRead, NullString, binrw, helpers::until_eof};
 use clap::Parser;
-use cryfs_config::config::ciphers::lookup_cipher_dyn;
+use cryfs_config::config::{CryConfig, ciphers::lookup_cipher_dyn};
 use cryfs_crypto::{
     kdf::{KDFParameters, PasswordBasedKDF, scrypt::backends::scrypt::ScryptScrypt},
     symmetric::{Cipher, CipherDef, EncryptionKey},
@@ -317,23 +317,99 @@ struct Args {
     inner: bool,
 }
 
+fn deserialize_into_inner(
+    source: &mut (impl Read + Seek),
+    password: &str,
+    print: bool,
+) -> Result<Data> {
+    let outer = OuterConfig::deserialize(source, print)?;
+    let key = derive_key::<KDF>(&outer.kdf_parameters_serialized, password)?;
+    let inner = outer.decrypt(key.outer_key(), print)?;
+    inner.decrypt(key.inner_key(), print)
+}
+
+pub enum LogMode {
+    FullConfig,
+    InnerConfig,
+}
+
+pub struct ConfigLoader {
+    log_mode: Option<LogMode>,
+    prettify: bool,
+}
+
+impl ConfigLoader {
+    pub fn new() -> Self {
+        Self {
+            log_mode: None,
+            prettify: false,
+        }
+    }
+
+    pub fn with_log_output(log_mode: LogMode, prettify: bool) -> Self {
+        Self {
+            log_mode: Some(log_mode),
+            prettify,
+        }
+    }
+
+    pub fn load_config(
+        &self,
+        source: &mut (impl Read + Seek),
+        password: &str,
+    ) -> Result<CryConfig> {
+        let inner_config_data = deserialize_into_inner(
+            source,
+            password,
+            matches!(self.log_mode, Some(LogMode::FullConfig)),
+        )?;
+
+        let config = CryConfig::deserialize(&mut Cursor::new(&inner_config_data))?;
+        if self.log_mode.is_none() {
+            return Ok(config);
+        }
+
+        let inner_config_string = if self.prettify {
+            let inner_config: serde_json::Value =
+                serde_json::from_reader(&mut Cursor::new(inner_config_data))?;
+            serde_json::to_string_pretty(&inner_config)?
+        } else {
+            String::from_utf8_lossy(&inner_config_data).to_string()
+        };
+        println!("{}", inner_config_string);
+
+        Ok(config)
+    }
+
+    pub fn print_config(&self, source: &mut (impl Read + Seek), password: &str) -> Result<()> {
+        let inner_config_data = deserialize_into_inner(
+            source,
+            password,
+            matches!(self.log_mode, Some(LogMode::FullConfig)),
+        )?;
+        let inner_config_string = if self.prettify {
+            let inner_config: serde_json::Value =
+                serde_json::from_reader(&mut Cursor::new(inner_config_data))?;
+            serde_json::to_string_pretty(&inner_config)?
+        } else {
+            String::from_utf8_lossy(&inner_config_data).to_string()
+        };
+        println!("{}", inner_config_string);
+        Ok(())
+    }
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
+
+    let log_mode = if args.inner {
+        LogMode::InnerConfig
+    } else {
+        LogMode::FullConfig
+    };
+    let loader = ConfigLoader::with_log_output(log_mode, args.prettify);
+
     let password = &args.password;
     let mut reader: std::io::BufReader<File> = BufReader::new(File::open(args.file)?);
-    let outer = OuterConfig::deserialize(&mut reader, !args.inner)?;
-    let key = derive_key::<KDF>(&outer.kdf_parameters_serialized, password)?;
-    let inner = outer.decrypt(key.outer_key(), !args.inner)?;
-    let inner_config_data = inner.decrypt(key.inner_key(), !args.inner)?;
-
-    let inner_config_string = if args.prettify {
-        let inner_config: serde_json::Value =
-            serde_json::from_reader(&mut Cursor::new(inner_config_data))?;
-        serde_json::to_string_pretty(&inner_config)?
-    } else {
-        String::from_utf8_lossy(&inner_config_data).to_string()
-    };
-    println!("{}", inner_config_string);
-
-    Ok(())
+    loader.print_config(&mut reader, password)
 }
